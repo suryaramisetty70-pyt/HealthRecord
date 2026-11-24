@@ -2,7 +2,9 @@ import os, sqlite3, secrets, hashlib, hmac, io, json
 from pathlib import Path
 from fastapi import FastAPI, Request, HTTPException, UploadFile, File
 from fastapi.responses import HTMLResponse, Response, JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+from datetime import date
+from fastapi.exceptions import RequestValidationError
 from reportlab.pdfgen import canvas
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
@@ -10,6 +12,17 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 DB=os.getenv('DATABASE_PATH','health.db')
 app=FastAPI(title='HealthRecord')
+@app.exception_handler(RequestValidationError)
+async def validation_error(request, exc):
+ fields=[]
+ for error in exc.errors():
+  field=str(error.get('loc', ('field',))[-1])
+  fields.append(f'{field}: {error.get("msg", "Invalid value")}')
+ return JSONResponse({'detail': '; '.join(fields)}, status_code=422)
+
+def valid_day(value):
+ try: return date.fromisoformat(value).isoformat()
+ except ValueError: raise ValueError('Enter a valid calendar date') from None
 def db():
  c=sqlite3.connect(DB); c.row_factory=sqlite3.Row; return c
 with db() as c:
@@ -50,8 +63,19 @@ def logout(r:Request):
  out=JSONResponse({'ok':True}); out.delete_cookie('session'); return out
 class Record(BaseModel):
  kind:str; title:str=Field(min_length=1,max_length=150); day:str=Field(pattern=r'^\d{4}-\d{2}-\d{2}$'); notes:str=Field(max_length=4000)
+ @field_validator('title')
+ @classmethod
+ def clean_title(cls, value):
+  if not value.strip(): raise ValueError('Title is required')
+  return value.strip()
+ @field_validator('day')
+ @classmethod
+ def check_day(cls, value): return valid_day(value)
 class Vital(BaseModel):
  day:str=Field(pattern=r'^\d{4}-\d{2}-\d{2}$'); bp:float=Field(gt=0,le=300); glucose:float=Field(gt=0,le=1000); cholesterol:float=Field(gt=0,le=1000); pulse:float=Field(gt=0,le=300)
+ @field_validator('day')
+ @classmethod
+ def check_day(cls, value): return valid_day(value)
 @app.get('/api/dashboard')
 def dashboard(r:Request):
  u=user(r)
