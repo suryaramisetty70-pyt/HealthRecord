@@ -157,3 +157,36 @@ def shared(patient:int,r:Request):
   return {'records':[dict(x) for x in c.execute('SELECT kind,title,day,notes FROM records WHERE uid=?',(patient,))], 'vitals':[dict(x) for x in c.execute('SELECT day,bp,glucose,cholesterol,pulse FROM vitals WHERE uid=?',(patient,))]}
 @app.get('/healthz')
 def healthz(): return {'status':'ok'}
+
+# Personal scheduling, not a verified clinician booking service.
+from datetime import datetime, timezone
+with db() as conn:
+ conn.execute("CREATE TABLE IF NOT EXISTS schedules(id INTEGER PRIMARY KEY, uid INTEGER NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL, due TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending')")
+class Schedule(BaseModel):
+ kind: str
+ title: str = Field(min_length=1,max_length=150)
+ due: datetime
+@app.get('/api/schedules')
+def schedules(r:Request):
+ u=user(r)
+ with db() as conn:
+  return [dict(x) for x in conn.execute('SELECT id,kind,title,due,status FROM schedules WHERE uid=? ORDER BY due',(u['id'],))]
+@app.post('/api/schedules')
+def add_schedule(a:Schedule,r:Request):
+ u=user(r)
+ if a.kind not in ('reminder','appointment') or not a.title.strip(): raise HTTPException(400,'Enter a valid type and title')
+ if a.due.tzinfo is None: raise HTTPException(400,'Time zone required')
+ due=a.due.astimezone(timezone.utc)
+ if due<=datetime.now(timezone.utc): raise HTTPException(400,'Choose a future time')
+ with db() as conn:
+  conn.execute('INSERT INTO schedules(uid,kind,title,due) VALUES(?,?,?,?)',(u['id'],a.kind,a.title.strip(),due.isoformat()))
+ return {'ok':True}
+class ScheduleStatus(BaseModel):
+ status:str
+@app.patch('/api/schedules/{id}')
+def change_schedule(id:int,a:ScheduleStatus,r:Request):
+ u=user(r)
+ if a.status not in ('completed','cancelled'): raise HTTPException(400,'Invalid status')
+ with db() as conn:
+  if not conn.execute("UPDATE schedules SET status=? WHERE id=? AND uid=? AND status='pending'",(a.status,id,u['id'])).rowcount: raise HTTPException(404,'Pending entry not found')
+ return {'ok':True}
